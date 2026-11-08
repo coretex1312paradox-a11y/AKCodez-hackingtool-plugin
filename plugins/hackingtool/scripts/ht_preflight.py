@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import sys
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -49,7 +50,27 @@ def _internet_ok() -> bool:
         return False
 
 
-def _native_tools_present() -> list[str]:
+def _wsl_tools_present(distro: str | None) -> list[str]:
+    """Probe core binaries inside the WSL distro (host PATH is irrelevant there)."""
+    argv = ["wsl"]
+    if distro:
+        argv += ["-d", distro]
+    argv += ["--", "bash", "-lc", "command -v " + " ".join(_CORE_BINARIES)]
+    try:
+        r = subprocess.run(argv, capture_output=True, timeout=30)
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    # `command -v` exits non-zero if any name is missing, so ignore returncode
+    # and parse the paths of the ones that were found.
+    text = r.stdout.decode("utf-8", errors="replace").replace("\x00", "")
+    found = {os.path.basename(ln.strip()) for ln in text.splitlines() if ln.strip()}
+    return [t for t in _CORE_BINARIES if t in found]
+
+
+def _native_tools_present(env: dict) -> list[str]:
+    if env["preferred_backend"] == "wsl":
+        distros = env.get("wsl_distros") or []
+        return _wsl_tools_present(distros[0] if distros else None)
     return [t for t in _CORE_BINARIES if shutil.which(t) is not None]
 
 
@@ -152,7 +173,7 @@ def main() -> int:
     env = ht_env.describe()
     disk_gb = _disk_free_gb()
     net_ok = _internet_ok()
-    native_tools = _native_tools_present() if env["preferred_backend"] in ("native", "wsl") else []
+    native_tools = _native_tools_present(env) if env["preferred_backend"] in ("native", "wsl") else []
     recs = _recommendations(env, disk_gb, net_ok, native_tools)
     verdict = _verdict(env, recs)
     json.dump({
